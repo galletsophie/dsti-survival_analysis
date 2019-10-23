@@ -1,0 +1,511 @@
+---
+title: "Survival_analysis_theory"
+author: "Sophie Gallet"
+date: "10/22/2019"
+output: html_document
+---
+
+#Time to Event Analysis / Survival Analysis in R
+
+Based on datacamp class. 
+
+## Intro: What is Survival Analysis 
+
+We're interested in the time until an event occurs (ex: time taxi takes to arrive after being called)
+
+Why do we need special methods for SA?
+- duration times are always positive. We need distributions that can work with that
+- different measures of interest
+- **censoring** - when we don't have the time event occured (ex: patient dropped out of clinical study)
+
+```{r}
+library("survival")
+library("survminer") #for more advanced visualization
+```
+
+```{r}
+# Check out the help page for this dataset
+#help(GBSG2, package = "TH.data")
+
+# Load the data
+data(GBSG2, package = "TH.data")
+
+# Look at the summary of the dataset
+summary(GBSG2)
+```
+
+### Censoring
+
+```{r}
+# Testing surv()
+time <-c(5,6,2,4,4)
+event <-c(1,0,0,1,1) #0 if censored data
+
+
+Surv(time, event) 
+```
+
+```{r}
+# Count censored and uncensored data
+num_cens <- table(GBSG2$cens)
+num_cens
+
+# Create barplot of censored and uncensored data
+barplot(num_cens)
+
+# Use help() to look at cens
+help(GBSG2, package = "TH.data")
+```
+
+```{r}
+# Create Surv-Object
+sobj <- Surv(GBSG2$time, GBSG2$cens)
+
+# Look at 10 first elements
+sobj[1:10]
+
+# Look at summary
+summary(sobj)
+
+# Look at structure
+str(sobj)
+```
+
+```{r}
+# Load the UnempDur data
+data(UnempDur, package = "Ecdat")
+
+# Count censored and uncensored data
+cens_employ_ft <- table(UnempDur$censor1)
+cens_employ_ft
+
+# Create barplot of censored and uncensored data
+barplot(cens_employ_ft)
+
+# Create Surv-Object
+sobj <- Surv(UnempDur$spell, UnempDur$censor1) #Surv() to define time to event outcomes
+
+# Look at 10 first elements
+sobj[1:10]
+```
+
+### Measures used in SA
+
+We're mostly interested in the survival function or survival curve.
+
+Allows us to answer questions such as:
+- What is the proba that a breast cancer patient survives more than 5 years?
+- What's the typical waiting tiem for a taxi in NYC?
+
+$S(t) = 1-F(t) = P(T>t)$ 
+
+Interpretation: probability that the duration is longer than t. 
+Can also be used to find median time (for which S(t)=.5)
+
+## Estimation of survival curves
+
+### Kaplan-Meier Estimates
+
+$\hat{S}(t) = \prod_{i:t_i \le t} \frac{n_i - d_i}{n_i} $
+
+where $n_i$ is the number of individuals under observations at time $t_i$
+and $d_i$ is the number of individuals who die (in our context) at time $t_i$
+
+```{r}
+# Using test data
+time <-c(5,6,2,4,4)
+event <-c(1,0,0,1,1) #0 if censored data
+
+# Manually computation of Shat
+shat2 = (5-0)/5 
+shat3 = shat2 * (4-0)/4 
+shat4 = shat3 * (4-2)/4
+shat5 = shat4 * (2-1)/2
+shat6 = shat5 * (1-0)/1
+
+
+# Coding the function - helps me understand/remember it
+shat <- function(t, times, events){
+  shat = 1 #meaninful initial value
+  ni = length(times) # we start with all the observations 
+  for (ti in 1:t) {
+    di = sum(events[times==ti]) #number of individuals dying (in our case) at ti
+    ci = sum(events[times==ti]==0) #censored events at ti
+    shat = shat * (ni-di)/ni
+    ni = ni-di-ci #number of individuals remaining at ti+1 
+  }
+  return(shat)
+}
+print("for t=4")
+print(c("Manual computation: " = shat4,
+        "Function computation: " = shat(4, time, event)))
+```
+```{r}
+# The R function to estimate survival curves 
+km <-survfit(Surv(time, event)~1) 
+summary(km)
+# plot function from survminer package - bug, missing data argument (see below)
+#ggsurvplot(km, conf.int=FALSE, risk.table="nrisk_cumevents", legend="none")
+```
+```{r}
+# Create time and event data
+time <- c(5, 6, 2, 4, 4)
+event <- c(1, 0, 0, 1, 1)
+
+# Compute Kaplan-Meier estimate
+km <- survfit(Surv(time, event) ~ 1)
+km
+
+# Take a look at the structure
+str(km)
+
+# Create data.frame
+data.frame(time = km$time, n.risk = km$n.risk, n.event = km$n.event, 
+n.censor = km$n.censor, surv = km$surv)
+```
+
+### Understanding and Visualizing Kaplan-Meier curves
+
+Ex: You throw a party and at 1 a.m. guests suddenly start dancing. You are curious to analyze how long your guests will dance for and start collecting data. The problem is that you get tired and go to bed after a while. You obtain the following right censored dancing times data given in dancedat:
+- name is the name of you r friend.
+- time is the right-censored dancing time.
+- obs_end indicates if you observed the end of your friends dance (1) or if you went to sleep before they stopped dancing (0).
+
+```{r}
+# Create dancedat data
+dancedat <- data.frame(
+  name = c("Chris", "Martin", "Conny", "Desi", "Reni", "Phil", 
+    "Flo", "Andrea", "Isaac", "Dayra", "Caspar"),
+  time = c(20, 2, 14, 22, 3, 7, 4, 15, 25, 17, 12),
+  obs_end = c(1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0))
+
+# Estimate the survivor function pretending that all censored observations are actual observations.
+km_wrong <- survfit(Surv(time) ~ 1, data = dancedat)
+
+# Estimate the survivor function from this dataset via kaplan-meier.
+km <- survfit(Surv(time, obs_end) ~ 1, data = dancedat)
+
+# Plot the two and compare
+ggsurvplot_combine(list(correct = km, wrong = km_wrong))
+```
+
+```{r}
+# Kaplan-Meier estimate
+km <- survfit(Surv(time, cens)~1, data = GBSG2)
+
+# plot of the Kaplan-Meier estimate
+ggsurvplot(km)
+
+# add the risk table to plot
+ggsurvplot(km, risk.table = TRUE)
+
+# add a line showing the median survival time
+ggsurvplot(km, risk.table = TRUE, surv.median.line = "hv")
+```
+
+### The Weibull model
+
+Kaplan-Meier is powerful, used by many people, but mostly as a descriptive tool to look at the data. It approximates the survival curve with a step function, while the Weibull model creates a smooth function. 
+```{r}
+# Weibull model
+wb <-survreg(Surv(time, cens)~1, data =GBSG2)
+
+# 90% of patients survive beyong time point:
+predict(wb, type ="quantile", p = 1-.9, newdata = data.frame(1)) #1-0.9 bc F(t)=1-S(t)
+
+# Compute the median survival from the model
+#predict(wb, type = "quantile", p = .5, newdata = data.frame(1))
+```
+90% of patients survive more than 384.99 days.
+
+```{r}
+# Weibull model
+wb <- survreg(Surv(time, cens) ~ 1, data=GBSG2)
+
+# Retrieve survival curve from model probabilities 
+surv <- seq(.99, .01, by = -.01)
+
+# Get time for each probability
+t <- predict(wb, type = "quantile", p = 1-surv, newdata = data.frame(1))
+
+# Create data frame with the information
+surv_wb <- data.frame(time = t, surv = surv)
+
+# Look at first few lines of the result
+head(surv_wb)
+```
+
+#### Visualizing the Weibull model
+
+Visualization functions often focus on step functions. 
+```{r}
+# Weibull model
+wb <- survreg(Surv(time, cens)~1, data=GBSG2)
+
+# Retrieve survival curve from model
+surv <- seq(.99, .01, by = -.01)
+
+# Get time for each probability
+t <- predict(wb, type = "quantile", p = 1-surv, newdata = data.frame(1))
+
+# Create data frame with the information needed for ggsurvplot_df
+surv_wb <- data.frame(time = t, surv = surv, 
+  upper = NA, lower = NA, std.err = NA)
+
+# Plot
+ggsurvplot_df(fit = surv_wb, surv.geom = geom_line)
+```
+50% of patients survive more than 1693.93 days
+
+## The Weibull model
+
+### Why Weibull
+
+Look at various survival curves 
+
+```{r}
+wbmod <- survreg(Surv(time, cens) ~ horTh + tsize, data = GBSG2) # we replace  1 by the exp variables
+coef(wbmod) # access coeff
+```
+
+A positive effect suggests an increased time until the event (in our case, death happens). Receiving hormone therapy leads to prolonged survival, while a bigger tumor size leads to a decreased survival. 
+
+### Visualizing Weibull models
+
+Steps to produce visualization
+- compute weibull model
+- decide on "imaginary patients (combination of tsize and horTh)
+- compute survival curves for imaginary patients
+- create data.frame with survival curve information
+- plot
+
+```{r}
+# Weibull model
+wbmod <- survreg(Surv(time, cens) ~ horTh + tsize, data = GBSG2)
+
+# Imaginary patients
+newdat <- expand.grid(
+  horTh = levels(GBSG2$horTh),
+  tsize = quantile(GBSG2$tsize, probs = c(.25, .5, .75)))
+
+# Compute survival curves
+surv <- seq(.99, .01, by=-.01)
+t<- predict(wbmod, type="quantile", p=1-surv, newdata = newdat)
+
+# How many rows and columns does t have?
+dim(t) 
+```
+
+Each row of t corresponds to one covariate combination (one imaginary patient) and each column to one value of surv. 
+
+```{r}
+library(reshape2)
+# Use cbind() to combine the information in newdat with t
+surv_wbmod_wide <- cbind(newdat, t)
+  
+# Use melt() to bring the data.frame to long format
+surv_wbmod <- melt(surv_wbmod_wide, id.vars = c("horTh", "tsize"), 
+                   variable.name = "surv_id", value.name = "time")
+
+# Use surv_wbmod$surv_id to add the correct survival probabilities surv
+surv_wbmod$surv <- surv[as.numeric(surv_wbmod$surv_id)]
+
+# Add columns upper, lower, std.err, and strata to the data.frame
+surv_wbmod[, c("upper", "lower", "std.err", "strata")] <- NA
+
+# Plot the survival curves
+ggsurvplot_df(surv_wbmod, surv.geom = geom_line,
+  linetype = "horTh", color = "tsize", legend.title = NULL)
+
+
+
+```
+
+### Other distributions than Weibull
+
+Options include exponential, lognormal. The exponential model is a special case of the Weibull, and Weibull is more flexible. 
+
+```{r}
+# Weibull model
+wbmod <- survreg(Surv(time, cens) ~ horTh, data = GBSG2)
+
+# Lognormal model
+lnmod <- survreg(Surv(time, cens) ~ horTh, data = GBSG2, dist="lognormal")
+
+# newdata
+newdat<-data.frame(horTh = levels(GBSG2$horTh))
+
+# survival probabilities
+surv <- seq(.99, .01, by = -.01)
+
+# Survival curve from Weibull model and log-normal model
+wbt <- predict(wbmod, type ="quantile", p=1-surv, newdata = newdat)
+lnt <- predict(lnmod, type ="quantile", p=1-surv, newdata = newdat)
+
+# Combine the information in newdat with wbt, lnt
+surv_wb<- cbind(newdat, wbt, "dist" = "weibull")
+surv_ln<- cbind(newdat, lnt, "dist" = "lognormal")
+
+surv_wide <- rbind(surv_wb, surv_ln)
+dim(surv_wide) # 4 rows, the number of covariate combinations 
+```
+
+
+```{r}
+# Melt the data.frame into long format.
+surv_long <- melt(surv_wide, id.vars = c("horTh", "dist"), variable.name = "surv_id", value.name = "time")
+
+# Add column for the survival probabilities
+surv_long$surv <- surv[as.numeric(surv_long$surv_id)]
+
+# Add columns upper, lower, std.err, and strata contianing NA values
+surv_long[, c("upper", "lower", "std.err", "strata")] <- NA
+
+# Plot survival curves
+ggsurvplot_df(surv_long, surv.geom = geom_line,
+              linetype = "horTh", color = "dist", legend.title = NULL)
+          
+```
+
+## The Cox model
+
+### Intro
+Semiparametric model (≠Weibull model, fully parametric). It means less strict distributional assumptions. 
+
+Also called the proportional hazards assumption. Both the Cox and the Weibull models assume proportional harzards: the instantaneous rate of occurence of the event is assumed to be proportional (not seen in details here). In brief, the survival curves can't cross. If the curves do cross, none of the two models is appropriate. 
+
+```{r}
+cxmod <- coxph(Surv(time, cens) ~ horTh, data = GBSG2)
+#summary(cxmod)
+coef(cxmod) #no intercept ≠ wbmod
+```
+No intercept compared to the Weibull model, as it's semi parametric.
+Contrary to Weibull model, a negative coefficients stands for a positive effect on duration time.  
+
+### Visualization
+Steps to produce visualization
+- compute Cox model
+- decide on "imaginary patients (combination of tsize and horTh)
+- compute survival curves for imaginary patients
+- create data.frame with survival curve information
+- plot
+
+```{r}
+# Cox model
+coxmd <- coxph(Surv(time, cens)~horTh + tsize, data = GBSG2)
+
+# Imaginary patients
+newdat <- expand.grid(
+  horTh = levels(GBSG2$horTh),
+  tsize = quantile(GBSG2$tsize, probs = c(.25, .5, .75)))
+rownames(newdata)<-letters[1:6]  
+
+# Inspect newdat
+newdat
+```
+
+```{r}
+# compute survival curves
+cxsf <- survfit(coxmd, data = GBSG2, newdata = newdat, conf.type = "none")
+head(cxsf$surv) 
+# Look at the head() of the time points to see which time points head(cxsf$surv) corresponds to.
+head(cxsf$time)
+```
+```{r}
+#compute dataframe
+surv_cxmod0 <- surv_summary(cxsf)
+head(surv_cxmod0)
+
+# get a character vector of patient letters
+pid <- as.character(surv_cxmod0$strata)
+
+# Multiple of the rows in newdat so that it fits with surv_cxmod0
+m_newdat = newdat[pid,]
+
+# Add patient info to data.frame
+surv_cxmod0 <- cbind(surv_cxmod0, m_newdat)
+head(surv_cxmod0)
+```
+
+```{r}
+# Plot
+ggsurvplot_df(surv_cxmod0, linetype="horTh", color="tsize",
+              censor=FALSE, legend.title=NULL) #removing censor for readablity
+```
+
+
+### What we learned
+
+Concepts
+- Why survival methods 
+- censoring
+- survival curve
+
+Methods
+- Kaplan-Meier estimate
+- Weibull model
+- Cox model
+
+Possible next steps:
+- Mathematical details
+- Interpretation of effect estimates
+- Inference
+
+Review Ex
+Why "imaginary patients"? 
+Because survival curves can only be plotted for given covariate combinations.
+
+
+### Capstone
+#### Cox Model
+```{r}
+# Remove the 1 row with a NA for our explanatory variable
+#lung2=lung[!is.na(lung$ph.karno),]
+
+# Compute Cox model and survival curves
+cxmod <- coxph(Surv(time, status) ~ ph.karno, data = lung)
+
+new_lung <- data.frame(ph.karno = c(60,70,80,90)) #imaginary patients
+cxsf <- survfit(cxmod, data = lung, newdata = new_lung, conf.type = "none")
+
+
+# Use the summary of cxsf to take a vector of patient IDs
+surv_cxmod0 <- surv_summary(cxsf)
+pid <- as.character(surv_cxmod0$strata)
+
+# Duplicate rows in newdat to fit with surv_cxmod0 and add them in
+m_newdata = new_lung[pid,, drop=FALSE]
+surv_cxmod <- cbind(surv_cxmod0, m_newdata)
+head(surv_cxmod)
+```
+```{r}
+#plot
+ggsurvplot_df(surv_cxmod, color="ph.karno", legend.title = NULL, censor=FALSE)
+```
+
+We can see that performance score do have an effect on survival probability. 
+
+#### Comparing Survival Curves
+
+Now, let's take a look at the survival curve of all individuals using the Kaplan-Meier estimate and compare it to the curve of a Cox model that takes performance into account.
+
+```{r}
+# Compute Kaplan-Meier curve
+km <- survfit(Surv(time, status) ~ 1, data=lung)
+
+# Compute Cox Model
+coxmod <- coxph(Surv(time, status) ~ ph.karno, data=lung)
+
+# Compute Cox model survival curves
+new_lung <- data.frame(ph.karno = c(60,70,80,90))
+cxsf <- survfit(coxmod, data = lung, newdata = new_lung, conf.type = "none")
+
+# Plot Kaplan-Meier curve
+ggsurvplot(km, conf.int = FALSE)
+
+# Plot Cox model survival curves
+## for Cox models, you can just enter the survfit() output into ggsurvplot() instead of
+##creating the needed data frame yourself and plugging it into ggsurvplot_df().
+ggsurvplot(cxsf, censor = FALSE)
+```
+
