@@ -1,0 +1,268 @@
+---
+title: "A Complete Survival Analysis Case Study: the Lung Data set"
+author: "Sophie Gallet"
+output: html_notebook
+---
+
+# Case Study: Lung Data set
+
+## Data Preparation
+```{r}
+library(tidyverse)
+library(survival)
+?lung
+```
+
+```{r}
+table(lung$inst)
+```
+
+```{r}
+nrow(lung)
+```
+
+```{r}
+d_raw <- as_tibble(lung)
+summary(d_raw)
+```
+
+```{r}
+d<-mutate(d_raw,
+          event = 0 + (status==2), #change values from 0/2 to 0/1 - censoring
+          inst = factor(inst), #change type
+          sex = factor(sex, levels = 1:2, labels=c("male", "female")) #readable levels
+          )
+summary(d)
+```
+### Deal with missing values
+
+```{r}
+# 47 missing for meal.cal, options: remove feature, impute, (remove observations)
+fit.meal <- lm(meal.cal ~ sex, data = d) #replace missing values with per sex average
+d$meal.cal[is.na(d$meal.cal)] <-
+  predict(fit.meal, newdata = subset(d, is.na(meal.cal)))
+summary(d)
+```
+
+```{r}
+d$wt.loss[is.na(d$wt.loss)] <- 
+  predict(lm(wt.loss ~ age + sex, data = d), newdata = subset(d, is.na(wt.loss)))
+
+summary(d)
+```
+
+One observation has no institution - if it was our study we'd want to find out which institution that was. 
+```{r}
+#d[is.na(d$inst),] same thing as:
+subset(d, is.na(d$inst))
+```
+
+```{r}
+d$y <-with(d, Surv(time/30.5, event)) #number of months 
+head(d$y)
+```
+
+## Exploratory Data Analysis
+
+```{r}
+survfit(y~1, data=d)
+```
+
+```{r}
+survfit(y ~ sex, data = d)
+```
+
+```{r}
+str(d)
+```
+
+```{r}
+table(d$ph.ecog) #0:good, 5:dead
+```
+```{r}
+survfit(y ~ ph.ecog, data = d)
+```
+
+As expected a higher score leads to a lower survival time. 
+
+```{r}
+hist(d$age)
+```
+
+```{r}
+d$ageCat <- cut(d$age, breaks = c(0,50,70,Inf))
+table(d$ageCat)
+survfit(y ~ ageCat, data = d)
+```
+
+No big difference between age groups. 
+
+```{r}
+table(d$ph.karno)
+table(d$pat.karno)
+survfit(y ~ ph.karno, data = d)
+survfit(y ~ pat.karno, data = d)
+```
+
+Some of the medians are not too reliable because we have small numbers in the groups.
+
+```{r}
+hist(d$meal.cal)
+```
+```{r}
+survfit(y ~ I(meal.cal < 800), data = d)
+```
+No big difference in survival between the two groups, the confidence intervals pretty overlap to a large degree. 
+
+```{r}
+stem(d$wt.loss)
+survfit(y ~ I(wt.loss > 0), data = d)
+stem(d$ph.karno)
+stem(d$meal.cal)
+survfit(y ~ I(meal.cal < 800), data = d)
+stem(d$wt.loss)
+```
+
+### Comparing 2 groups
+
+```{r}
+survdiff(y ~ I(wt.loss > 0), data = d)
+survdiff(y ~ ageCat, data = d)
+survdiff(y ~ sex, data = d)
+survdiff(y ~ I(meal.cal < 800), data = d)
+survdiff(y ~ ph.ecog, data = d) #treating them as categorical variables
+survdiff(y ~ ph.karno, data = d)
+```
+
+Let's organize our logrank test results in a more compact manner:
+
+```{r}
+test_variable <- function(var_name) {
+  e$x <- e[[ var_name ]]
+  survdiff(y ~ x, data = e)
+}
+
+e <- mutate(d,
+  weight_loss = wt.loss > 0,
+  meal_calories_low = meal.cal < 800,
+  age = ageCat
+)
+
+logrank_tests <-
+  tibble(variable = c("weight_loss", "age", "sex", "meal_calories_low", "ph.ecog", "ph.karno")) %>%
+  mutate(obj = map(variable, test_variable),
+         tab = map(obj, broom::glance)) %>%
+  unnest(tab)
+logrank_tests
+```
+
+## Data Modeling and Machine Learning
+### Model training
+```{r}
+load("data/lung.RData")
+d1 <- lung
+fit <- coxph(y ~ ., data = d1)
+summary(fit)
+```
+
+Interpretation of coef: for 1 unit increase of ph.karno while keeping other variables fixed, we get coef_value increase in survival.
+
+Note that the exp(coef) can help us interpret the data (with everything else the same, on average a male patient's is twice as likely to die (?) and inversely a female is 50% less likely to die). 
+
+### model 1. AIC-STEP
+```{r}
+fit.aic <- step(fit)
+summary(fit.aic)
+
+b.aic <- coef(fit.aic) #saving coef for future comparison
+```
+
+### model 2. manual
+Based on expertise on the field, we (pretend to) use expert opinion to build a model:
+```{r}
+fit.manual <- coxph(y ~ sex + ph.ecog + pat.karno + wt.loss, data = d1)
+summary(fit.manual)
+
+b.manual <- coef(fit.manual) #saving the coef for future use
+```
+### model 3.elastic net
+```{r}
+library(glmnet)
+X<-model.matrix(y ~ ., data = d1)[,-1]
+str(X)
+head(X)
+y<-d1$y
+
+```
+
+```{r}
+fit <- cv.glmnet(X, y, family = "cox")
+b.enet.all <- coef(fit, s="lambda.min")
+b.enet <- b.enet.all[b.enet.all != 0] #keep only non zero coeff
+names(b.enet) <- colnames(X)[as.logical(b.enet.all != 0)]
+b.enet
+```
+
+### model 4. CCP
+
+```{r}
+#adply: for each slice of an array, apply function then combine results into a data frame. 2: split by cols
+#Tidy the result of a test into a summary data.frame, with disposable row names: suited for manip by plyr
+fits <- plyr::adply(X, 2, function(x) broom::tidy(coxph(y ~ x))) 
+print(fits)
+#str(fits)
+
+b.CCP <- with(fits, structure(estimate, names = as.character(X1)))
+b.CCP
+```
+
+```{r}
+# Combine all coeffs together 
+models_coeff <- tibble(
+  method = c("manual", "aic", "elnet", "cpp"),
+  coefficients = list(b.manual, b.aic, b.enet, b.CCP)
+)
+models_coeff
+```
+
+
+## Model testing
+
+```{r}
+# sweep returns an array obtained from an input array(x) by sweeping out a summary statistic (b)
+lincom <- function(b,X) rowSums(sweep(x = X[ , names(b), drop=FALSE], 
+                                      MARGIN = 2, 
+                                      STATS = b, 
+                                      FUN="*"))
+```
+```{r}
+load("data/lung_newdata.RData")
+X.new <- model.matrix(y ~ . - 1, lung_newdata)
+y <- lung_newdata$y
+```
+
+```{r}
+models_performance <- mutate(models_coeff,
+  predictions = map(coefficients, ~ lincom(., X.new)),
+  cox_obj = map(predictions, ~ coxph(y ~ I(. / sd(.)))),
+  cox_tab = map(cox_obj, broom::tidy)
+) %>%
+  unnest(cox_tab)
+models_performance
+```
+## Sharing the results outside of R
+```{r}
+models_coefficients_flat <- mutate(models_coeff,
+  coefficients_tab = map(coefficients, ~ tibble(feature = names(.), 
+                                                coefficient = unname(.)))) %>%
+  unnest(coefficients_tab, .drop = TRUE) %>%
+  select(method, feature, coefficient)
+models_coefficients_flat
+```
+
+Write tables on disk:
+```{r}
+write_csv(models_coefficients_flat, "models_coefficients.csv")
+write_csv(models_performance, "models_performance.csv")
+```
+
